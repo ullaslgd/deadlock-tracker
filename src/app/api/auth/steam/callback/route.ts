@@ -1,14 +1,18 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { RelyingParty } from "openid";
+import { prisma } from "@/lib/prisma";
+import { createSession } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   try {
     const appUrl = process.env.APP_URL;
-    const stateFromUrl = request.nextUrl.searchParams.get("state");
-    const stateFromCookie = request.cookies.get(
-      "steam_login_state"
-    )?.value;
+
+    const stateFromUrl =
+      request.nextUrl.searchParams.get("state");
+
+    const stateFromCookie =
+      request.cookies.get("steam_login_state")?.value;
 
     if (
       !appUrl ||
@@ -29,13 +33,28 @@ export async function GET(request: NextRequest) {
       baseUrl
     );
 
-    expectedReturnUrl.searchParams.set("state", stateFromCookie);
-
-    const returnedUrl = request.nextUrl.searchParams.get(
-      "openid.return_to"
+    expectedReturnUrl.searchParams.set(
+      "state",
+      stateFromCookie
     );
 
-    if (returnedUrl !== expectedReturnUrl.toString()) {
+    const returnedUrl =
+      request.nextUrl.searchParams.get("openid.return_to");
+
+    if (!returnedUrl) {
+      return NextResponse.json(
+        { error: "Missing OpenID return URL" },
+        { status: 400 }
+      );
+    }
+
+    const actualReturnUrl = new URL(returnedUrl);
+
+    if (
+      actualReturnUrl.origin !== expectedReturnUrl.origin ||
+      actualReturnUrl.pathname !== expectedReturnUrl.pathname ||
+      actualReturnUrl.searchParams.get("state") !== stateFromCookie
+    ) {
       return NextResponse.json(
         { error: "Invalid OpenID return URL" },
         { status: 400 }
@@ -45,7 +64,7 @@ export async function GET(request: NextRequest) {
     const relyingParty = new RelyingParty(
       expectedReturnUrl.toString(),
       baseUrl.origin + "/",
-      false,
+      true,
       true,
       []
     );
@@ -54,14 +73,17 @@ export async function GET(request: NextRequest) {
       authenticated: boolean;
       claimedIdentifier?: string;
     }>((resolve, reject) => {
-      relyingParty.verifyAssertion(request.url, (error, response) => {
-        if (error || !response) {
-          reject(error ?? new Error("Missing OpenID response"));
-          return;
-        }
+      relyingParty.verifyAssertion(
+        request.url,
+        (error, response) => {
+          if (error || !response) {
+            reject(error ?? new Error("Missing OpenID response"));
+            return;
+          }
 
-        resolve(response);
-      });
+          resolve(response);
+        }
+      );
     });
 
     if (!result.authenticated || !result.claimedIdentifier) {
@@ -93,17 +115,29 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const response = NextResponse.json({
-      success: true,
-      message: "Steam identity verified successfully!",
-      steamId64,
+    const user = await prisma.user.upsert({
+      where: { steamId64 },
+      update: {},
+      create: {
+        steamId64,
+        personaName: `Player_${steamId64.slice(-6)}`,
+        profileUrl: `https://steamcommunity.com/profiles/${steamId64}`,
+      },
     });
+
+    const response = NextResponse.redirect(
+      new URL("/dashboard", baseUrl)
+    );
+
+    await createSession(user.id);
 
     response.cookies.delete("steam_login_state");
 
     return response;
+
   } catch (error) {
-    console.error("Steam callback error:", error);
+    console.error("Steam callback error:");
+    console.dir(error, { depth: 10 });
 
     return NextResponse.json(
       { error: "Steam authentication could not be completed" },

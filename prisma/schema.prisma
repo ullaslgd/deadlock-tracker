@@ -15,9 +15,25 @@ model User {
   avatarUrl   String?
   profileUrl  String?
 
-  visibility String   @default("public")
-  searchable Boolean  @default(true)
+  visibility  String   @default("public")
+  searchable  Boolean  @default(true)
+
+  sessions    Session[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }

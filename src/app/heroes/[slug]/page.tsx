@@ -1,9 +1,18 @@
 
 import { notFound } from "next/navigation";
+import { ChevronsUpDown, ExternalLink, Trophy } from "lucide-react";
 
 export const instant = false;
 
 const API_URL = "https://api.deadlock-api.com/v1/assets/heroes";
+
+const LEADERBOARD_REGIONS = [
+  { label: "Europe", value: "Europe" },
+  { label: "Asia", value: "Asia" },
+  { label: "North America", value: "NAmerica" },
+  { label: "South America", value: "SAmerica" },
+  { label: "Oceania", value: "Oceania" },
+] as const;
 
 interface StatValue {
   value?: number;
@@ -15,6 +24,36 @@ interface PopularItem {
   class_name: string;
   pick_pct: number;
   winrate_pct: number;
+}
+
+interface GameItem {
+  id: number;
+  class_name: string;
+  name: string;
+  image?: string;
+  image_webp?: string;
+  shop_image?: string;
+  shop_image_webp?: string;
+  cost?: number;
+  item_slot_type?: string;
+  item_tier?: number;
+}
+
+interface LeaderboardEntry {
+  account_name?: string | null;
+  possible_account_ids?: number[];
+  rank?: number | null;
+}
+
+interface Leaderboard {
+  entries: LeaderboardEntry[];
+}
+
+interface SteamProfile {
+  account_id: number;
+  personaname: string;
+  profileurl: string;
+  avatarmedium: string;
 }
 
 interface Hero {
@@ -63,16 +102,78 @@ interface Hero {
   items?: Record<string, string>;
 }
 
-async function getHeroes(): Promise<Hero[]> {
-  const response = await fetch(API_URL, {
+async function getHero(heroId: number): Promise<Hero | null> {
+  const response = await fetch(`${API_URL}/${heroId}`, {
     cache: "no-store",
   });
 
+  if (response.status === 404) {
+    return null;
+  }
+
   if (!response.ok) {
-    throw new Error("Failed to fetch Deadlock heroes");
+    throw new Error("Failed to fetch Deadlock hero");
   }
 
   return response.json();
+}
+
+async function getItems(): Promise<GameItem[]> {
+  const response = await fetch(
+    "https://api.deadlock-api.com/v1/assets/items",
+    { cache: "no-store" }
+  );
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch items");
+  }
+
+  const items = await response.json();
+
+  return Array.isArray(items) ? items : [];
+}
+
+async function getHeroLeaderboard(
+  region: (typeof LEADERBOARD_REGIONS)[number]["value"],
+  heroId: number
+): Promise<Leaderboard | null> {
+  try {
+    const response = await fetch(
+      `https://api.deadlock-api.com/v1/leaderboard/${region}/${heroId}`,
+      { next: { revalidate: 3600 } }
+    );
+
+    return response.ok ? response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getSteamProfiles(
+  accountIds: number[]
+): Promise<Record<number, SteamProfile>> {
+  if (accountIds.length === 0) {
+    return {};
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.deadlock-api.com/v1/players/steam?account_ids=${accountIds.join(",")}`,
+      { next: { revalidate: 3600 } }
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    const profiles: SteamProfile[] = await response.json();
+
+    return Object.fromEntries(
+      profiles.map((profile) => [profile.account_id, profile])
+    );
+  } catch {
+    return {};
+  }
 }
 
 function formatName(value: string) {
@@ -87,6 +188,33 @@ function formatValue(value: number) {
   return Number.isInteger(value)
     ? value.toLocaleString()
     : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function getSteamProfileUrl(possibleAccountIds?: number[]) {
+  const accountId = possibleAccountIds?.[0];
+
+  if (accountId === undefined || !Number.isInteger(accountId)) {
+    return null;
+  }
+
+  const steamId64 = BigInt("76561197960265728") + BigInt(accountId);
+
+  return `https://steamcommunity.com/profiles/${steamId64}`;
+}
+
+function getRankBadgeUrl(rank?: number | null) {
+  if (rank == null) {
+    return null;
+  }
+
+  const tier = Math.floor(rank / 10);
+  const subrank = rank % 10;
+
+  if (tier < 1 || subrank < 1 || subrank > 6) {
+    return null;
+  }
+
+  return `https://api.deadlock-api.com/v1/assets/ranks/${tier}/${subrank}/image?format=webp`;
 }
 
 function StatCard({
@@ -126,28 +254,57 @@ function SectionHeading({
 function ItemGroup({
   title,
   items,
+  gameItems,
 }: {
   title: string;
   items: PopularItem[];
+  gameItems: GameItem[];
 }) {
   return (
     <div>
-      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-gray-400">
-        {title}
-      </h3>
+      <div className="mb-4 flex items-center gap-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
+          {title}
+        </h3>
+        <ChevronsUpDown
+          size={16}
+          aria-label="Scrollable item list"
+          className="text-purple-400"
+        />
+      </div>
 
-      {items.length === 0 ? (
-        <p className="text-sm text-gray-600">No data available.</p>
-      ) : (
-        <div className="space-y-2">
-          {items.map((item) => (
+      <div className="max-h-[470px] space-y-3 overflow-y-auto pr-2">
+        {items.map((item) => {
+          const gameItem = gameItems.find(
+            (entry) => entry.class_name === item.class_name
+          );
+
+          const image =
+            gameItem?.shop_image_webp ||
+            gameItem?.shop_image ||
+            gameItem?.image_webp ||
+            gameItem?.image;
+
+          return (
             <div
               key={item.item_id}
-              className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3"
+              className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-3 transition hover:border-purple-500/40"
             >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-gray-200">
-                  {formatName(item.class_name.replace(/^upgrade_/, ""))}
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black">
+                {image ? (
+                  <img
+                    src={image}
+                    alt={gameItem?.name || item.class_name}
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <span className="text-xs text-gray-600">?</span>
+                )}
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-gray-200">
+                  {gameItem?.name || formatName(item.class_name)}
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
                   Pick rate {item.pick_pct.toFixed(1)}%
@@ -161,9 +318,9 @@ function ItemGroup({
                 <p className="text-[10px] text-gray-500">Win rate</p>
               </div>
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -180,12 +337,34 @@ export default async function HeroDetailsPage({
     notFound();
   }
 
-  const heroes = await getHeroes();
-  const hero = heroes.find((item) => item.id === heroId);
+  const [hero, gameItems] = await Promise.all([
+    getHero(heroId),
+    getItems(),
+  ]);
 
   if (!hero) {
     notFound();
   }
+
+  const leaderboardResponses = await Promise.all(
+    LEADERBOARD_REGIONS.map(({ value }) => getHeroLeaderboard(value, heroId))
+  );
+
+  const leaderboardAccountIds = [
+    ...new Set(
+      leaderboardResponses.flatMap((leaderboard) =>
+        leaderboard?.entries.flatMap(
+          (entry) => entry.possible_account_ids || []
+        ) || []
+      )
+    ),
+  ];
+  const steamProfiles = await getSteamProfiles(leaderboardAccountIds);
+
+  const regionalLeaderboards = LEADERBOARD_REGIONS.map((region, index) => ({
+    ...region,
+    entries: leaderboardResponses[index]?.entries.slice(0, 5) || [],
+  })).filter(({ entries }) => entries.length > 0);
 
   const heroRender =
     hero.images?.icon_hero_card ||
@@ -447,7 +626,7 @@ export default async function HeroDetailsPage({
         <section>
           <SectionHeading
             eyebrow="Community Data"
-            title="Popular Builds"
+            title="Popular Items"
           />
 
           <p className="mb-8 text-sm text-gray-500">
@@ -455,22 +634,133 @@ export default async function HeroDetailsPage({
             These are API identifiers converted into readable names.
           </p>
 
+          
           <div className="grid gap-10 lg:grid-cols-3">
-            <ItemGroup
-              title="Early Game"
-              items={popularItems?.early_game || []}
-            />
 
-            <ItemGroup
-              title="Mid Game"
-              items={popularItems?.mid_game || []}
-            />
+  <ItemGroup
+    title="Early Game"
+    items={popularItems?.early_game || []}
+    gameItems={gameItems}
+  />
 
-            <ItemGroup
-              title="Late Game"
-              items={popularItems?.late_game || []}
-            />
-          </div>
+  <ItemGroup
+    title="Mid Game"
+    items={popularItems?.mid_game || []}
+    gameItems={gameItems}
+  />
+
+  <ItemGroup
+    title="Late Game"
+    items={popularItems?.late_game || []}
+    gameItems={gameItems}
+  />
+    </div>
+        </section>
+
+        {/* TOP PLAYERS */}
+
+        <section>
+          <SectionHeading eyebrow="Ranked Leaderboards" title="Top Players" />
+
+          <p className="mb-8 text-sm text-gray-500">
+            The top five ranked players for {hero.name} in each region. Leaderboards refresh hourly.
+          </p>
+
+          {regionalLeaderboards.length > 0 ? (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              {regionalLeaderboards.map(({ label, entries }) => (
+                <div
+                  key={label}
+                  className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]"
+                >
+                  <div className="flex items-center gap-2 border-b border-white/10 bg-white/[0.03] px-4 py-3">
+                    <Trophy size={15} className="text-purple-400" />
+                    <h3 className="text-sm font-semibold text-gray-200">{label}</h3>
+                  </div>
+
+                  <ol className="divide-y divide-white/[0.06]">
+                    {entries.map((player, index) => {
+                      const steamProfile = player.possible_account_ids
+                        ?.map((accountId) => steamProfiles[accountId])
+                        .find((profile) => profile !== undefined);
+                      const steamProfileUrl =
+                        steamProfile?.profileurl ||
+                        getSteamProfileUrl(player.possible_account_ids);
+                      const rankBadgeUrl = getRankBadgeUrl(player.rank);
+                      const playerName =
+                        steamProfile?.personaname ||
+                        player.account_name ||
+                        "Unknown player";
+
+                      return (
+                        <li
+                          key={`${player.account_name || "unknown"}-${index}`}
+                          className="flex items-center gap-3 px-4 py-3"
+                        >
+                          <span className="w-5 text-xs font-bold text-purple-400">
+                            #{index + 1}
+                          </span>
+
+                          {steamProfileUrl ? (
+                            <a
+                              href={steamProfileUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={`Open ${playerName}'s Steam profile`}
+                              className="group flex min-w-0 flex-1 items-center gap-1.5 text-sm text-gray-200 transition hover:text-purple-300"
+                            >
+                              {steamProfile?.avatarmedium ? (
+                                <img
+                                  src={steamProfile.avatarmedium}
+                                  alt=""
+                                  className="h-7 w-7 shrink-0 rounded-full"
+                                />
+                              ) : (
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-purple-500/15 text-xs font-bold text-purple-300">
+                                  {playerName.slice(0, 1).toUpperCase()}
+                                </span>
+                              )}
+                              <span className="truncate">{playerName}</span>
+                              <ExternalLink
+                                size={12}
+                                aria-hidden="true"
+                                className="shrink-0 opacity-0 transition group-hover:opacity-100"
+                              />
+                            </a>
+                          ) : (
+                            <span className="flex min-w-0 flex-1 items-center gap-2 text-sm text-gray-400">
+                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/5 text-xs font-bold text-gray-500">
+                                {playerName.slice(0, 1).toUpperCase()}
+                              </span>
+                              <span className="truncate">{playerName}</span>
+                            </span>
+                          )}
+
+                          {rankBadgeUrl ? (
+                            <img
+                              src={rankBadgeUrl}
+                              alt={`Rank ${player.rank} badge`}
+                              className="h-7 w-7 shrink-0 object-contain"
+                            />
+                          ) : (
+                            <Trophy
+                              size={16}
+                              aria-label="Rank unavailable"
+                              className="shrink-0 text-gray-600"
+                            />
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-xl border border-white/10 bg-white/[0.02] p-5 text-sm text-gray-500">
+              Leaderboard data is currently unavailable for this hero.
+            </p>
+          )}
         </section>
 
         {/* LEVEL PROGRESSION */}
