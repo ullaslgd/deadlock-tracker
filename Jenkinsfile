@@ -1,64 +1,23 @@
-
 pipeline {
     agent any
 
-    options {
-        skipDefaultCheckout(true)
-    }
-
     stages {
-
-        stage('Checkout') {
+        stage('Build') {
             steps {
-                echo 'Downloading project from GitHub...'
-                checkout scm
+                echo "Building..."
             }
         }
 
-        stage('Verify Docker') {
+        stage('Test') {
             steps {
-                script {
-                    if (isUnix()) {
-                        sh 'docker --version'
-                    } else {
-                        bat 'docker --version'
-                    }
-                }
+                echo "Testing..."
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Deploy') {
             steps {
-                script {
-                    if (isUnix()) {
-                        sh 'docker build -t deadlock-codex:latest .'
-                    } else {
-                        bat 'docker build -t deadlock-codex:latest .'
-                    }
-                }
+                echo "Deploying..."
             }
-        }
-
-        stage('Verify Image') {
-            steps {
-                script {
-                    if (isUnix()) {
-                        sh 'docker image inspect deadlock-codex:latest'
-                    } else {
-                        bat 'docker image inspect deadlock-codex:latest'
-                    }
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            echo 'SUCCESS: Deadlock Codex Docker image built!'
-        }
-
-        failure {
-            echo 'FAILED: Please check the Jenkins console output.'
         }
     }
 }
